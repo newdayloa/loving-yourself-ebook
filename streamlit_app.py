@@ -2,18 +2,25 @@
 
 from __future__ import annotations
 
+import base64
 import logging
 import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 import streamlit as st
 from supabase import Client, create_client
 
 
 EBOOK_TITLE = "The Art of Loving Yourself"
-EBOOK_PATH = Path(__file__).parent / "assets" / "the-art-of-loving-yourself.pdf"
+ASSETS_PATH = Path(__file__).parent / "assets"
+EBOOK_PATH = ASSETS_PATH / "the-art-of-loving-yourself.pdf"
+LOGO_PATH = ASSETS_PATH / "logo.png"
+EBOOK_COVER_PATH = ASSETS_PATH / "ebook-cover.png"
+AUTHOR_PHOTO_PATH = ASSETS_PATH / "author-photo.png"
+AUTHOR_NAME = "Sireesha Puduru"
 SOURCE = "LinkedIn Lead Magnet"
 EMAIL_PATTERN = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 LOGGER = logging.getLogger(__name__)
@@ -41,10 +48,17 @@ def apply_styles() -> None:
         .eyebrow { color: var(--rose-dark); font-size: .82rem; font-weight: 700; letter-spacing: .14em;
             text-align: center; text-transform: uppercase; }
         .intro { font-size: 1.08rem; line-height: 1.75; text-align: center; margin: 0 auto 1.6rem; max-width: 650px; }
-        .placeholder { border: 1px dashed #b88b93; border-radius: 18px; color: #765d62; padding: 2rem 1rem;
-            text-align: center; background: #fffaf7; margin-bottom: 1rem; }
-        .brand-row { display:flex; gap:1rem; justify-content:center; flex-wrap:wrap; margin-bottom:1rem; }
-        .brand-row .placeholder { min-width:180px; padding:1rem; }
+        .brand-area { display:flex; flex-direction:column; align-items:center; gap:.8rem; margin:1.2rem 0 2rem; }
+        .brand-logo { display:block; width:auto; height:auto; max-width:min(240px, 70vw); max-height:120px; object-fit:contain; }
+        .author-name { color:var(--rose-dark); font-family:Georgia,serif; font-size:1.35rem; font-style:italic;
+            letter-spacing:.02em; margin:0; text-align:center; }
+        .book-author-grid { display:grid; grid-template-columns:minmax(0, 1fr) minmax(0, 1fr); gap:2rem;
+            align-items:center; margin:0 auto 2rem; max-width:680px; }
+        .book-author-grid.single-image { grid-template-columns:minmax(0, 360px); justify-content:center; }
+        .visual-image { display:block; width:100%; height:auto; margin:auto; }
+        .ebook-cover { max-width:320px; object-fit:contain; }
+        .author-photo { max-width:340px; border-radius:22px; object-fit:cover;
+            box-shadow:0 12px 30px rgba(72,45,49,.12); }
         div[data-testid="stForm"], .success-card { background: rgba(255,255,255,.72); border: 1px solid #eadbd6;
             border-radius: 22px; padding: 1.4rem; box-shadow: 0 8px 30px rgba(72,45,49,.06); }
         div[data-baseweb="input"] > div, div[data-baseweb="textarea"] > div { border-radius: 12px; }
@@ -52,7 +66,12 @@ def apply_styles() -> None:
             border-radius: 999px; min-height: 3rem; font-weight: 700; width: 100%; }
         .stButton > button:hover, .stDownloadButton > button:hover { background: var(--rose-dark); color:white; }
         .small-note { color:#675a5d; font-size:.9rem; text-align:center; }
-        @media (max-width: 640px) { .block-container { padding: 1.5rem 1rem 3rem; } h1 { font-size:2rem; } }
+        @media (max-width: 640px) {
+            .block-container { padding:1.5rem 1rem 3rem; }
+            h1 { font-size:2rem; }
+            .book-author-grid { grid-template-columns:1fr; gap:1.5rem; }
+            .ebook-cover, .author-photo { max-width:min(340px, 88vw); }
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -70,6 +89,17 @@ def clean_text(value: str, max_length: int | None = None, single_line: bool = Fa
     return value[:max_length] if max_length else value
 
 
+def image_data_uri(path: Path) -> str | None:
+    """Return an embedded PNG URI, or None when the optional image is unavailable."""
+    if not path.is_file():
+        return None
+    try:
+        encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+    except OSError:
+        return None
+    return f"data:image/png;base64,{encoded}"
+
+
 @st.cache_resource(show_spinner=False)
 def get_supabase() -> Client:
     url = str(st.secrets["SUPABASE_URL"]).strip()
@@ -78,6 +108,9 @@ def get_supabase() -> Client:
         raise ValueError("Supabase secrets are empty")
     if not url.startswith("https://"):
         raise ValueError("Supabase URL must begin with https://")
+    parsed_url = urlparse(url)
+    if parsed_url.path not in ("", "/") or parsed_url.query or parsed_url.fragment:
+        raise ValueError("Supabase URL must be the base project URL without an API path")
     return create_client(url, key)
 
 
@@ -114,6 +147,8 @@ def submission_error_code(error: Exception) -> str:
         )
         if value
     ).lower()
+    if database_code == "PGRST125":
+        return "CONFIG-02"
     if isinstance(error, (KeyError, ValueError)) or "secret" in message or "api key" in message:
         return "CONFIG-01"
     if database_code == "42501" or any(
@@ -172,16 +207,33 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+logo_uri = image_data_uri(LOGO_PATH)
+brand_content = (
+    f'<img class="brand-logo" src="{logo_uri}" alt="The Art of Loving Yourself logo">'
+    if logo_uri
+    else ""
+)
 st.markdown(
-    '<div class="brand-row"><div class="placeholder">Logo placeholder</div>'
-    '<div class="placeholder">Author name placeholder</div></div>',
+    f'<div class="brand-area">{brand_content}<p class="author-name">{AUTHOR_NAME}</p></div>',
     unsafe_allow_html=True,
 )
-left, right = st.columns(2)
-with left:
-    st.markdown('<div class="placeholder">Ebook cover placeholder</div>', unsafe_allow_html=True)
-with right:
-    st.markdown('<div class="placeholder">Author photograph placeholder</div>', unsafe_allow_html=True)
+
+cover_uri = image_data_uri(EBOOK_COVER_PATH)
+author_photo_uri = image_data_uri(AUTHOR_PHOTO_PATH)
+visuals: list[str] = []
+if cover_uri:
+    visuals.append(
+        f'<img class="visual-image ebook-cover" src="{cover_uri}" '
+        'alt="Complete cover of The Art of Loving Yourself ebook">'
+    )
+if author_photo_uri:
+    visuals.append(
+        f'<img class="visual-image author-photo" src="{author_photo_uri}" '
+        f'alt="Portrait photograph of {AUTHOR_NAME}">'
+    )
+if visuals:
+    grid_class = "book-author-grid single-image" if len(visuals) == 1 else "book-author-grid"
+    st.markdown(f'<div class="{grid_class}">{"".join(visuals)}</div>', unsafe_allow_html=True)
 
 if "lead" not in st.session_state:
     st.session_state.lead = None
