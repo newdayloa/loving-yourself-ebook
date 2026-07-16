@@ -103,17 +103,38 @@ def save_lead(payload: dict[str, object]) -> dict[str, object]:
 
 def submission_error_code(error: Exception) -> str:
     """Return a safe support code without revealing infrastructure details."""
-    message = str(error).lower()
+    database_code = str(getattr(error, "code", "") or "").upper()
+    message = " ".join(
+        str(value)
+        for value in (
+            getattr(error, "message", ""),
+            getattr(error, "details", ""),
+            getattr(error, "hint", ""),
+            str(error),
+        )
+        if value
+    ).lower()
     if isinstance(error, (KeyError, ValueError)) or "secret" in message or "api key" in message:
         return "CONFIG-01"
-    if any(term in message for term in ("401", "403", "jwt", "unauthorized", "forbidden")):
+    if database_code == "42501" or any(
+        term in message
+        for term in ("401", "403", "jwt", "unauthorized", "forbidden", "row-level security", "permission denied")
+    ):
         return "AUTH-01"
-    if any(term in message for term in ("could not find the table", "schema cache", "relation")):
+    if database_code in {"42P01", "PGRST205"} or any(
+        term in message for term in ("could not find the table", "relation does not exist")
+    ):
         return "TABLE-01"
-    if any(term in message for term in ("column", "constraint", "null value")):
+    if database_code in {"42703", "PGRST204"} or "column" in message or "schema cache" in message:
+        return "SCHEMA-01"
+    if database_code in {"23502", "23503", "23505", "23514", "22P02"} or any(
+        term in message for term in ("constraint", "null value", "duplicate key", "invalid input syntax")
+    ):
         return "SCHEMA-01"
     if any(term in message for term in ("timeout", "connect", "network", "name resolution")):
         return "NETWORK-01"
+    if re.fullmatch(r"[A-Z0-9]{5,8}", database_code):
+        return f"DATABASE-{database_code}"
     return "DATABASE-01"
 
 
