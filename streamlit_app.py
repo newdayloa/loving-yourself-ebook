@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import uuid
 from datetime import datetime, timezone
@@ -15,6 +16,7 @@ EBOOK_TITLE = "The Art of Loving Yourself"
 EBOOK_PATH = Path(__file__).parent / "assets" / "the-art-of-loving-yourself.pdf"
 SOURCE = "LinkedIn Lead Magnet"
 EMAIL_PATTERN = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+LOGGER = logging.getLogger(__name__)
 
 
 st.set_page_config(
@@ -70,10 +72,12 @@ def clean_text(value: str, max_length: int | None = None, single_line: bool = Fa
 
 @st.cache_resource(show_spinner=False)
 def get_supabase() -> Client:
-    url = st.secrets["SUPABASE_URL"]
-    key = st.secrets["SUPABASE_SERVICE_ROLE_KEY"]
+    url = str(st.secrets["SUPABASE_URL"]).strip()
+    key = str(st.secrets["SUPABASE_SERVICE_ROLE_KEY"]).strip()
     if not url or not key:
         raise ValueError("Supabase secrets are empty")
+    if not url.startswith("https://"):
+        raise ValueError("Supabase URL must begin with https://")
     return create_client(url, key)
 
 
@@ -95,6 +99,22 @@ def save_lead(payload: dict[str, object]) -> dict[str, object]:
     if not response.data:
         raise RuntimeError("Lead was not saved")
     return response.data[0]
+
+
+def submission_error_code(error: Exception) -> str:
+    """Return a safe support code without revealing infrastructure details."""
+    message = str(error).lower()
+    if isinstance(error, (KeyError, ValueError)) or "secret" in message or "api key" in message:
+        return "CONFIG-01"
+    if any(term in message for term in ("401", "403", "jwt", "unauthorized", "forbidden")):
+        return "AUTH-01"
+    if any(term in message for term in ("could not find the table", "schema cache", "relation")):
+        return "TABLE-01"
+    if any(term in message for term in ("column", "constraint", "null value")):
+        return "SCHEMA-01"
+    if any(term in message for term in ("timeout", "connect", "network", "name resolution")):
+        return "NETWORK-01"
+    return "DATABASE-01"
 
 
 def record_download(lead_id: str) -> None:
@@ -192,10 +212,13 @@ if st.session_state.lead is None:
                 with st.spinner("Preparing your complimentary copy…"):
                     st.session_state.lead = save_lead(payload)
                 st.rerun()
-            except Exception:
+            except Exception as error:
+                error_code = submission_error_code(error)
+                # Details go only to the private Streamlit server log, never to the web page.
+                LOGGER.exception("Lead submission failed [%s]", error_code)
                 st.error(
                     "We could not save your details right now. Your ebook has not been unlocked. "
-                    "Please wait a moment and try again."
+                    f"Please wait a moment and try again. Support code: {error_code}"
                 )
 else:
     st.success("Your details were saved successfully.")
